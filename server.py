@@ -102,6 +102,13 @@ def load_config() -> dict[str, Any]:
     return cfg
 
 
+def save_config(cfg: dict[str, Any]) -> None:
+    """写回 config.yaml。文件在 data/ 下，只进私密库。"""
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(
+        yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
 CFG = load_config()
 
 # ─────────────────────────── 数据库 ───────────────────────────
@@ -194,7 +201,11 @@ def init_db() -> None:
             c.executescript(FTS_TRI)
         except sqlite3.OperationalError:
             c.executescript(FTS_FALLBACK)
-        c.execute("INSERT OR IGNORE INTO meta(k,v) VALUES('schema','6.2')")
+        try:
+            c.execute("ALTER TABLE buckets ADD COLUMN expire_at INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        c.execute("INSERT OR IGNORE INTO meta(k,v) VALUES('schema','6.3')")
 
 
 init_db()
@@ -340,8 +351,9 @@ def resolve_conflict(c: sqlite3.Connection, concept_key: str, concept_value: str
         return ADD, None
     if row["concept_value"] == concept_value:
         return NOOP, row
-    if row["pinned"] and not confirm:
-        return ADD, row          # 未确认：只能并存，不覆盖
+    if row["pinned"]:
+        # 100% 记忆只能新增、修改，不能被覆盖/作废（那等于删除）
+        return ADD, row
     return UPDATE, row
 
 
@@ -407,14 +419,14 @@ def mirror_to_vault(row: sqlite3.Row) -> None:
 
 # ─────────────────────────── 写入 ───────────────────────────
 
-VALID_KINDS = {"event", "feel", "plan", "letter", "persona", "anchor", "i", "you", "them"}
+VALID_KINDS = {"event", "feel", "plan", "letter", "persona", "anchor", "i", "you", "them", "dream"}
 
 
 def write_bucket(*, content: str, title: str = "", domain: str = "未分类", tags: str = "",
                  kind: str = "event", category: str = "life", importance: Optional[float] = None,
                  actor: str = "ai", emotion: Any = None, concept_key: str = "",
                  concept_value: str = "", pinned: bool = False, source: str = "",
-                 confirm: bool = False) -> dict[str, Any]:
+                 confirm: bool = False, expire_at: int = 0) -> dict[str, Any]:
     if kind not in VALID_KINDS:
         kind = "event"
     if not content.strip():
@@ -442,11 +454,11 @@ def write_bucket(*, content: str, title: str = "", domain: str = "未分类", ta
         c.execute(
             "INSERT INTO buckets(id,title,content,domain,tags,kind,importance,importance_base,"
             "pinned,concept_key,concept_value,emotion_capture,emotion_last,emotion_history,"
-            "created_at,last_active,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "created_at,last_active,source,expire_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (bid, (title or content[:24]).replace("\n", " "), content, domain, tags, kind,
              base, base, 1 if pinned else 0, concept_key, concept_value,
              json.dumps(cap, ensure_ascii=False), json.dumps(last_first, ensure_ascii=False),
-             json.dumps([], ensure_ascii=False), t, t, source))
+             json.dumps([], ensure_ascii=False), t, t, source, expire_at))
         upsert_fts(c, bid)
         if CFG.get("storage") == "cloud":
             c.execute("INSERT INTO outbox(id,at,op,payload) VALUES(?,?,?,?)",
@@ -568,10 +580,13 @@ def _post_process(bid: str, content: str, title: str, domain: str, tags: str,
                 # 用户没手动给分时，才采用 LLM 判定的类别来定初始权重
                 if cat2 and abs(float(importance) - float(CFG["initial"].get(category, 50))) < 0.01:
                     new_imp = float(CFG["initial"].get(cat2, importance))
+                new_kind = obj.get("kind") or kind
+                if kind == "dream":
+                    new_kind = "dream"      # 梦的标记不能被打标覆盖
                 with tx() as c:
                     c.execute("UPDATE buckets SET domain=?, tags=?, kind=?, importance=?, importance_base=? WHERE id=?",
                               (obj.get("domain") or domain, obj.get("tags") or tags,
-                               obj.get("kind") or kind, new_imp, new_imp, bid))
+                               new_kind, new_imp, new_imp, bid))
                 conn = db()
                 try:
                     row = conn.execute("SELECT * FROM buckets WHERE id=?", (bid,)).fetchone()
@@ -587,6 +602,46 @@ def _post_process(bid: str, content: str, title: str, domain: str, tags: str,
             pass
 
     threading.Thread(target=run, daemon=True).start()
+
+
+def hard_delete(bucket_id: str) -> bool:
+    """物理删除：数据库行 + Markdown 镜像 + 向量。只有面板（人类）能调。"""
+    conn = db()
+    try:
+        row = conn.execute("SELECT id FROM buckets WHERE id=?", (bucket_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return False
+    for old in VAULT.rglob(f"*-{bucket_id[:6]}.md"):
+        try:
+            old.unlink()
+        except Exception:
+            pass
+    with tx() as c:
+        c.execute("DELETE FROM buckets WHERE id=?", (bucket_id,))
+        c.execute("DELETE FROM embeddings WHERE bucket_id=?", (bucket_id,))
+        try:
+            c.execute("INSERT INTO buckets_fts(buckets_fts) VALUES('rebuild')")
+        except sqlite3.OperationalError:
+            pass
+    return True
+
+
+def purge_expired() -> int:
+    """清掉过期的梦记忆。"""
+    t = now_ts()
+    conn = db()
+    try:
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM buckets WHERE expire_at>0 AND expire_at<?", (t,)).fetchall()]
+    finally:
+        conn.close()
+    n = 0
+    for bid in ids:
+        if hard_delete(bid):
+            n += 1
+    return n
 
 
 # ─────────────────────────── 检索 ───────────────────────────
@@ -698,7 +753,7 @@ def build_injection(at: Optional[int] = None, dry: bool = False) -> dict[str, An
     conn = db()
     try:
         rows = [dict(r) for r in conn.execute(
-            "SELECT * FROM buckets WHERE superseded_by='' AND digested=0").fetchall()]
+            "SELECT * FROM buckets WHERE superseded_by='' AND digested=0 AND kind!='dream'").fetchall()]
     finally:
         conn.close()
     for r in rows:
@@ -776,6 +831,7 @@ def dream(window_hours: int = 48, dry: bool = False) -> dict[str, Any]:
     t = now_ts()
     since = t - window_hours * 3600
     decayed = 0 if dry else apply_decay_all(t)
+    purged = 0 if dry else purge_expired()
     conn = db()
     try:
         rows = [dict(r) for r in conn.execute(
@@ -804,9 +860,9 @@ def dream(window_hours: int = 48, dry: bool = False) -> dict[str, Any]:
         for r in seeds[:2]:
             created.append(write_bucket(
                 content=f"梦里又回到「{r['title']}」。醒来只剩一点余温，比昨天的淡。",
-                title=f"梦·{r['title'][:16]}", domain="梦", kind="event", category="life",
+                title=f"梦·{r['title'][:16]}", domain="梦", kind="dream", category="life",
                 actor="ai", emotion=parse_emotion(r["emotion_capture"]),
-                source=f"dream:{r['id']}")["id"])
+                source=f"dream:{r['id']}", expire_at=t + 7 * 86400)["id"])
     # 补向量：把还没向量化的记忆补上（每次最多 20 条，失败不影响做梦）
     backfilled = 0
     if CFG.get("semantic"):
@@ -829,7 +885,7 @@ def dream(window_hours: int = 48, dry: bool = False) -> dict[str, Any]:
         except Exception:
             pass
 
-    return {"decayed": decayed, "vector_backfilled": backfilled,
+    return {"decayed": decayed, "purged_dreams": purged, "vector_backfilled": backfilled,
             "window_buckets": len(rows), "active_plans": len(plans),
             "emotion_settled": {"first": avg(firsts), "current": avg(lasts)},
             "dream": dream_text, "dream_buckets": created, "dry_run": dry}
@@ -964,6 +1020,17 @@ def api_emotion(bid: str, body: dict = Body(...), authorization: Optional[str] =
     return {"ok": True}
 
 
+@app.delete("/api/bucket/{bid}")
+def api_delete(bid: str, authorization: Optional[str] = Header(None),
+               x_actor: Optional[str] = Header(None)) -> dict[str, Any]:
+    """删除记忆。只有面板（人类）走这条路；MCP 不提供任何删除工具。"""
+    check_dash(authorization, x_actor)
+    ok = hard_delete(bid)
+    if ok:
+        audit("user", "DELETE", bid, "via dashboard")
+    return {"ok": ok}
+
+
 @app.post("/api/breath")
 def api_breath(body: dict = Body(default={}), authorization: Optional[str] = Header(None),
                x_actor: Optional[str] = Header(None)) -> dict[str, Any]:
@@ -978,6 +1045,32 @@ def api_dream(body: dict = Body(default={}), authorization: Optional[str] = Head
     return dream(int(body.get("window_hours", 48)), bool(body.get("dry", True)))
 
 
+@app.post("/api/config")
+def api_config_save(body: dict = Body(...), authorization: Optional[str] = Header(None),
+                    x_actor: Optional[str] = Header(None)) -> dict[str, Any]:
+    """面板保存 LLM / Embedding 配置。写 config.yaml，保存后立即生效。"""
+    global CFG
+    check_dash(authorization, x_actor)
+    cfg = load_config()
+    changed = []
+    for sec in ("llm", "embed"):
+        if isinstance(body.get(sec), dict):
+            cur = cfg.setdefault(sec, {})
+            for k in ("api_key", "base_url", "model"):
+                v = str(body[sec].get(k, "") or "").strip()
+                if v:                       # 空值不覆盖已有配置
+                    cur[k] = v
+            changed.append(sec)
+    for k in ("auto_tag", "semantic"):
+        if k in body:
+            cfg[k] = bool(body[k])
+            changed.append(k)
+    save_config(cfg)
+    CFG = load_config()
+    audit("user", "CONFIG", "", ",".join(changed))
+    return {"ok": True, "saved": changed}
+
+
 @app.get("/api/config")
 def api_config(authorization: Optional[str] = Header(None), x_actor: Optional[str] = Header(None)) -> dict[str, Any]:
     check_dash(authorization, x_actor)
@@ -985,6 +1078,10 @@ def api_config(authorization: Optional[str] = Header(None), x_actor: Optional[st
     for k in ("mcp_token", "dashboard_password"):
         if cfg.get(k):
             cfg[k] = "***"
+    # 嵌套的 key 也要脱敏，否则面板能读到完整密钥
+    for sec in ("llm", "embed"):
+        if isinstance(cfg.get(sec), dict) and cfg[sec].get("api_key"):
+            cfg[sec]["api_key"] = "***"
     return cfg
 
 

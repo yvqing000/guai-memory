@@ -78,12 +78,22 @@
          transition:.2s;z-index:60;pointer-events:none;max-width:86vw;text-align:center}
   .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
   .empty{text-align:center;color:var(--mute);font-size:13px;padding:40px 10px}
+  .hdrow{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .hdrow h1{flex:1;margin:0}
+  .btn.sm{padding:8px 14px;font-size:12.5px}
+  .fld{display:block;width:100%;margin-bottom:9px;padding:11px 13px;border:1px solid var(--line);
+       border-radius:var(--rb);background:var(--card);color:var(--ink);font-size:13.5px;outline:0}
+  .sw{display:flex;align-items:center;gap:8px;padding:9px 0;font-size:13.5px}
+  .hint{color:var(--mute);font-size:12px;margin:10px 0 0;line-height:1.6}
 </style>
 </head>
 <body>
 
 <header>
-  <h1>归屿记忆</h1>
+  <div class="hdrow">
+    <h1>归屿记忆</h1>
+    <button class="btn ghost sm" onclick="openSettings()">设置</button>
+  </div>
   <div class="stats" id="stats"></div>
 </header>
 
@@ -104,11 +114,30 @@
 
 <main id="list"></main>
 
-<div class="mask" id="mask" onclick="closeD()"></div>
+<div class="mask" id="mask" onclick="closeAll()"></div>
 <div class="drawer" id="drawer">
   <div class="grip"></div>
   <div class="dhead"><h2 id="dtitle">—</h2><button class="x" onclick="closeD()">×</button></div>
   <div class="dbody" id="dbody"></div>
+</div>
+<div class="drawer" id="setdrawer">
+  <div class="grip"></div>
+  <div class="dhead"><h2>引擎设置</h2><button class="x" onclick="closeAll()">×</button></div>
+  <div class="dbody">
+    <div class="sect">打标模型 · 自动判断领域 / 标签 / 类型</div>
+    <input class="fld" id="llm_key" type="password" placeholder="API Key（留空 = 不改）">
+    <input class="fld" id="llm_base" placeholder="Base URL，例如 https://api.siliconflow.cn/v1">
+    <input class="fld" id="llm_model" placeholder="模型名，例如 Qwen/Qwen2.5-7B-Instruct">
+    <div class="sect">向量模型 · 语义检索</div>
+    <input class="fld" id="emb_key" type="password" placeholder="API Key（留空 = 不改）">
+    <input class="fld" id="emb_base" placeholder="Base URL，例如 https://api.siliconflow.cn/v1">
+    <input class="fld" id="emb_model" placeholder="模型名，例如 BAAI/bge-m3">
+    <div class="sect">开关</div>
+    <label class="sw"><input type="checkbox" id="sw_tag"> 自动打标</label>
+    <label class="sw"><input type="checkbox" id="sw_sem"> 语义检索</label>
+    <div class="acts"><button class="btn" onclick="saveSettings()">保存</button></div>
+    <p class="hint">保存后立即生效，不用重启。key 只写进服务器的 data/config.yaml，那个目录只进私密库，不会出现在公开仓库里。</p>
+  </div>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -229,11 +258,44 @@ async function openD(id){
         <button class="btn ghost" onclick="pin('${b.id}',${b.pinned?0:1})">${b.pinned?'取消 100%':'钉为 100%'}</button>
         <button class="btn ghost" onclick="resolve('${b.id}',${b.resolved?0:1})">${b.resolved?'标为未解决':'标为已解决'}</button>
         <button class="btn warn" onclick="copyText('${b.id}')">复制正文</button>
+        <button class="btn warn" onclick="del('${b.id}')">删除</button>
       </div>`;
     $('mask').classList.add('on'); $('drawer').classList.add('on');
   }catch(e){ toast('详情打不开：'+e.message); }
 }
 function closeD(){ $('mask').classList.remove('on'); $('drawer').classList.remove('on'); }
+function closeAll(){ $('mask').classList.remove('on'); $('drawer').classList.remove('on'); $('setdrawer').classList.remove('on'); }
+
+async function openSettings(){
+  try{
+    const c = await api('/api/config');
+    $('llm_base').value = (c.llm && c.llm.base_url) || '';
+    $('llm_model').value = (c.llm && c.llm.model) || '';
+    $('emb_base').value = (c.embed && c.embed.base_url) || '';
+    $('emb_model').value = (c.embed && c.embed.model) || '';
+    $('llm_key').value = ''; $('emb_key').value = '';
+    $('sw_tag').checked = !!c.auto_tag; $('sw_sem').checked = !!c.semantic;
+    $('mask').classList.add('on'); $('setdrawer').classList.add('on');
+  }catch(e){ toast('读配置失败'); }
+}
+async function saveSettings(){
+  const body = {
+    llm:{api_key:$('llm_key').value.trim(), base_url:$('llm_base').value.trim(), model:$('llm_model').value.trim()},
+    embed:{api_key:$('emb_key').value.trim(), base_url:$('emb_base').value.trim(), model:$('emb_model').value.trim()},
+    auto_tag:$('sw_tag').checked, semantic:$('sw_sem').checked
+  };
+  try{ await api('/api/config',{method:'POST',body:JSON.stringify(body)}); toast('已保存，立即生效'); closeAll(); }
+  catch(e){ toast('保存失败：'+e.message); }
+}
+async function del(id){
+  if(!confirm('删除后不可恢复（100% 记忆也能删）。确定？')) return;
+  if(!confirm('再确认一次：真的要删这条？')) return;
+  try{
+    const r = await fetch(API_BASE + '/api/bucket/' + id, {method:'DELETE'});
+    if(!r.ok) throw new Error(await r.text());
+    toast('已删除'); closeAll(); loadStats(); loadList(true);
+  }catch(e){ toast('删除失败：'+e.message); }
+}
 
 async function touch(id){
   try{ await api(`/api/bucket/${id}/touch`,{method:'POST',body:'{"mentioned":true}'}); toast('提起了一次'); loadStats(); loadList(true); closeD(); }
