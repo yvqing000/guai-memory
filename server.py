@@ -78,6 +78,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mirror_enabled": True,
     # 自动打标（LLM）：写完一条后自动判断领域/标签/类型
     "auto_tag": True,
+    "dream_keep": 100,          # 梦记忆只保留最近 N 条，超出的删最早的
     "llm": {"api_key": os.environ.get("GUAI_LLM_API_KEY", ""),
             "base_url": os.environ.get("GUAI_LLM_BASE_URL", ""),
             "model": os.environ.get("GUAI_LLM_MODEL", ""), "timeout": 30},
@@ -629,16 +630,32 @@ def hard_delete(bucket_id: str) -> bool:
 
 
 def purge_expired() -> int:
-    """清掉过期的梦记忆。"""
+    """清掉显式设置了过期时间的记忆（梦现在不走这条）。"""
     t = now_ts()
     conn = db()
     try:
         ids = [r["id"] for r in conn.execute(
-            "SELECT id FROM buckets WHERE expire_at>0 AND expire_at<?", (t,)).fetchall()]
+            "SELECT id FROM buckets WHERE expire_at>0 AND expire_at<?").fetchall()]
     finally:
         conn.close()
     n = 0
     for bid in ids:
+        if hard_delete(bid):
+            n += 1
+    return n
+
+
+def trim_dreams(keep: int = 100) -> int:
+    """梦只保留最近 keep 条，超出的从最早的开始删。"""
+    conn = db()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM buckets WHERE kind='dream' ORDER BY created_at DESC, rowid DESC").fetchall()
+    finally:
+        conn.close()
+    extra = [r["id"] for r in rows[max(0, int(keep)):]]
+    n = 0
+    for bid in extra:
         if hard_delete(bid):
             n += 1
     return n
@@ -831,7 +848,7 @@ def dream(window_hours: int = 48, dry: bool = False) -> dict[str, Any]:
     t = now_ts()
     since = t - window_hours * 3600
     decayed = 0 if dry else apply_decay_all(t)
-    purged = 0 if dry else purge_expired()
+    trimmed = 0
     conn = db()
     try:
         rows = [dict(r) for r in conn.execute(
@@ -862,7 +879,7 @@ def dream(window_hours: int = 48, dry: bool = False) -> dict[str, Any]:
                 content=f"梦里又回到「{r['title']}」。醒来只剩一点余温，比昨天的淡。",
                 title=f"梦·{r['title'][:16]}", domain="梦", kind="dream", category="life",
                 actor="ai", emotion=parse_emotion(r["emotion_capture"]),
-                source=f"dream:{r['id']}", expire_at=t + 7 * 86400)["id"])
+                source=f"dream:{r['id']}")["id"])
     # 补向量：把还没向量化的记忆补上（每次最多 20 条，失败不影响做梦）
     backfilled = 0
     if CFG.get("semantic"):
@@ -885,7 +902,10 @@ def dream(window_hours: int = 48, dry: bool = False) -> dict[str, Any]:
         except Exception:
             pass
 
-    return {"decayed": decayed, "purged_dreams": purged, "vector_backfilled": backfilled,
+    if not dry:
+        trimmed = trim_dreams(int(CFG.get("dream_keep", 100)))
+
+    return {"decayed": decayed, "trimmed_dreams": trimmed, "vector_backfilled": backfilled,
             "window_buckets": len(rows), "active_plans": len(plans),
             "emotion_settled": {"first": avg(firsts), "current": avg(lasts)},
             "dream": dream_text, "dream_buckets": created, "dry_run": dry}
