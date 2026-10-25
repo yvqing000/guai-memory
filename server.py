@@ -924,10 +924,11 @@ def check_mcp_auth(authorization: Optional[str]) -> None:
 
 
 def check_dash(authorization: Optional[str], x_actor: Optional[str]) -> str:
+    """面板接口一律视为人类操作——用户身份只从这里来，MCP 不能自称。"""
     pw = CFG.get("dashboard_password") or ""
     if pw and (authorization or "").split(" ", 1)[-1] != pw:
         raise HTTPException(401, "需要 Dashboard 密码")
-    return x_actor or "ai"
+    return "user"
 
 
 @app.get("/health")
@@ -1197,7 +1198,7 @@ def call_tool(name: str, args: dict[str, Any], actor: str = "ai") -> Any:
 async def mcp(req: Request, authorization: Optional[str] = Header(None),
               x_actor: Optional[str] = Header(None)):
     check_mcp_auth(authorization)
-    actor = x_actor or "ai"
+    actor = "ai"          # MCP 一律视为 AI，忽略客户端自称的身份
     try:
         body = await req.json()
     except Exception:
