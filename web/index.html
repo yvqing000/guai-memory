@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#F2F1EC">
+<title>归屿记忆</title>
+<style>
+  :root{
+    --bg:#F2F1EC; --card:#FFFFFF; --line:#E6E5DE;
+    --green:#A8B8A5; --deep:#7E9580; --soft:#DCE4D9;
+    --ink:#3A3C39; --mute:#8B8D88; --warn:#B58A6A;
+    --r:22px; --rb:14px; --rp:999px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;
+       padding-bottom:80px}
+  header{padding:18px 16px 10px;position:sticky;top:0;background:linear-gradient(var(--bg) 82%,rgba(242,241,236,0));z-index:20}
+  h1{margin:0 0 10px;font-size:19px;font-weight:600;letter-spacing:.3px}
+  .stats{display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
+  .stats::-webkit-scrollbar{display:none}
+  .st{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:9px 14px;min-width:76px;flex:0 0 auto}
+  .st b{display:block;font-size:20px;font-weight:600;color:var(--deep);line-height:1.2}
+  .st span{font-size:11px;color:var(--mute)}
+  .bar{display:flex;gap:8px;padding:6px 16px 12px;position:sticky;top:96px;background:var(--bg);z-index:19;flex-wrap:wrap}
+  .bar input,.bar select{padding:9px 12px;border:1px solid var(--line);border-radius:var(--rb);
+       background:var(--card);color:var(--ink);outline:0;font-size:13px}
+  .bar input{flex:1 1 140px;min-width:0}
+  .bar select{flex:0 0 auto}
+  main{padding:0 16px;display:flex;flex-direction:column;gap:10px}
+  .item{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px 15px;
+        transition:transform .08s,border-color .15s}
+  .item:active{transform:scale(.994);border-color:var(--green)}
+  .row1{display:flex;align-items:flex-start;gap:8px}
+  .title{font-size:15px;font-weight:600;flex:1;line-height:1.4;word-break:break-word}
+  .pinmark{flex:0 0 auto;font-size:11px;background:var(--deep);color:#fff;border-radius:var(--rp);padding:1px 8px;margin-top:2px}
+  .meta{display:flex;flex-wrap:wrap;gap:6px;margin:7px 0 0;font-size:11.5px;color:var(--mute);align-items:center}
+  .chip{background:var(--soft);color:var(--deep);border-radius:var(--rp);padding:1px 8px}
+  .preview{margin:8px 0 0;font-size:13px;color:#5d5f5b;display:-webkit-box;-webkit-line-clamp:2;
+           -webkit-box-orient:vertical;overflow:hidden}
+  .emo{display:inline-flex;align-items:center;gap:4px}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .dot.first{background:conic-gradient(var(--deep) 0 50%,#fff 50% 100%);border:1px solid var(--soft)}
+  .more{text-align:center;color:var(--mute);font-size:12.5px;padding:16px 0 8px}
+  .loadmore{display:block;width:100%;margin:14px 0 4px;padding:12px;border:1px solid var(--green);
+            background:transparent;color:var(--deep);border-radius:var(--rp);font-size:13px}
+  /* 抽屉 */
+  .mask{position:fixed;inset:0;background:rgba(40,44,40,.35);opacity:0;pointer-events:none;transition:opacity .22s;z-index:40}
+  .mask.on{opacity:1;pointer-events:auto}
+  .drawer{position:fixed;left:0;right:0;bottom:0;max-height:88vh;background:var(--bg);
+          border-radius:26px 26px 0 0;transform:translateY(102%);transition:transform .26s cubic-bezier(.22,.8,.3,1);
+          z-index:41;display:flex;flex-direction:column;box-shadow:0 -8px 30px rgba(60,70,60,.12)}
+  .drawer.on{transform:translateY(0)}
+  .grip{width:40px;height:4px;border-radius:9px;background:var(--line);margin:10px auto 0}
+  .dhead{padding:10px 20px 6px;display:flex;gap:10px;align-items:flex-start}
+  .dhead h2{font-size:17px;margin:0;flex:1;line-height:1.4;font-weight:600;word-break:break-word}
+  .x{border:0;background:var(--soft);color:var(--deep);width:30px;height:30px;border-radius:50%;font-size:16px;line-height:1}
+  .dbody{overflow-y:auto;padding:0 20px 26px;-webkit-overflow-scrolling:touch}
+  .dmeta{font-size:12px;color:var(--mute);display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+  .content{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px 15px;
+           font-size:14px;white-space:pre-wrap;word-break:break-word;margin-bottom:14px}
+  .sect{font-size:12px;color:var(--mute);margin:14px 0 7px}
+  .emocard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px 14px;display:flex;gap:18px}
+  .emocol{flex:1}
+  .emocol .lab{font-size:11px;color:var(--mute);margin-bottom:4px}
+  .emocol .val{font-size:15px;font-weight:600}
+  .emocol .bar2{height:6px;border-radius:9px;background:var(--soft);margin-top:6px;overflow:hidden}
+  .emocol .bar2 i{display:block;height:100%;border-radius:9px;background:var(--green)}
+  .impbar{height:8px;border-radius:9px;background:var(--soft);overflow:hidden;margin:6px 0 4px}
+  .impbar i{display:block;height:100%;background:linear-gradient(90deg,var(--green),var(--deep))}
+  .acts{display:flex;flex-wrap:wrap;gap:9px;margin-top:16px}
+  .btn{border:0;border-radius:var(--rp);padding:11px 17px;font-size:13.5px;background:var(--green);color:#fff}
+  .btn.ghost{background:transparent;border:1px solid var(--green);color:var(--deep)}
+  .btn.warn{background:transparent;border:1px solid #d8c3b2;color:var(--warn)}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);opacity:0;
+         background:rgba(58,60,57,.92);color:#fff;padding:10px 18px;border-radius:var(--rp);font-size:13px;
+         transition:.2s;z-index:60;pointer-events:none;max-width:86vw;text-align:center}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+  .empty{text-align:center;color:var(--mute);font-size:13px;padding:40px 10px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>归屿记忆</h1>
+  <div class="stats" id="stats"></div>
+</header>
+
+<div class="bar">
+  <input id="q" placeholder="搜标题、正文、标签…" enterkeyhint="search">
+  <select id="sort">
+    <option value="imp">按重要度</option>
+    <option value="time">按时间</option>
+  </select>
+  <select id="dom"></select>
+  <select id="kind">
+    <option value="">全部类型</option>
+    <option value="event">事件</option><option value="feel">感受</option>
+    <option value="plan">待办</option><option value="persona">人设</option>
+    <option value="anchor">锚点</option><option value="letter">信件</option>
+  </select>
+</div>
+
+<main id="list"></main>
+
+<div class="mask" id="mask" onclick="closeD()"></div>
+<div class="drawer" id="drawer">
+  <div class="grip"></div>
+  <div class="dhead"><h2 id="dtitle">—</h2><button class="x" onclick="closeD()">×</button></div>
+  <div class="dbody" id="dbody"></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let page = 1, size = 20, all = [], loading = false, hasMore = true;
+
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove('on'), 2200);
+}
+function esc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmt(ts){
+  if(!ts) return '';
+  const d = new Date(ts*1000), n = new Date();
+  const sameDay = d.toDateString() === n.toDateString();
+  const p = x => String(x).padStart(2,'0');
+  return sameDay ? `${p(d.getHours())}:${p(d.getMinutes())}` : `${d.getMonth()+1}/${d.getDate()}`;
+}
+function hue(v){ return `hsl(${Math.round((v??0.5)*360)},52%,58%)`; }
+const KIND_CN = {event:'事件', feel:'感受', plan:'待办', persona:'人设', anchor:'锚点', letter:'信件', i:'自省', you:'你', them:'他们'};
+function kindName(k){ return KIND_CN[k] || k || ''; }
+
+const API_BASE = location.pathname.replace(/\/[^/]*$/, '');
+async function api(path, opt={}){
+  const r = await fetch(API_BASE + path, {...opt, headers:{'Content-Type':'application/json'}});
+  if(!r.ok) throw new Error(await r.text().catch(()=>r.status));
+  return r.json();
+}
+
+async function loadStats(){
+  try{
+    const s = await api('/api/stats');
+    $('stats').innerHTML = [
+      ['在册', s.total], ['钉选', s.pinned], ['待办', s.plans], ['作废', s.archived]
+    ].map(([l,n])=>`<div class="st"><b>${n}</b><span>${l}</span></div>`).join('');
+    $('dom').innerHTML = '<option value="">全部领域</option>' +
+      (s.by_domain||[]).map(d=>`<option value="${esc(d.domain)}">${esc(d.domain)} (${d.n})</option>`).join('');
+  }catch(e){ toast('统计没加载出来'); }
+}
+
+async function loadList(reset=true){
+  if(loading) return; loading = true;
+  if(reset){ page = 1; all = []; hasMore = true; $('list').innerHTML = '<div class="empty">读取中…</div>'; }
+  const q = $('q').value.trim(), dom = $('dom').value, kind = $('kind').value;
+  try{
+    const r = await api(`/api/buckets?q=${encodeURIComponent(q)}&domain=${encodeURIComponent(dom)}&kind=${encodeURIComponent(kind)}&page=${page}&size=${size}`);
+    const items = r.items || [];
+    all = all.concat(items);
+    hasMore = items.length === size;
+    render();
+    if(reset && !all.length) $('list').innerHTML = '<div class="empty">没有匹配的记忆</div>';
+  }catch(e){ $('list').innerHTML = '<div class="empty">读取失败：'+esc(e.message)+'</div>'; }
+  finally{ loading = false; }
+}
+
+function sortItems(arr){
+  const s = $('sort').value;
+  return arr.slice().sort((a,b)=> s==='time' ? (b.last_active||0)-(a.last_active||0) : (b.effective??0)-(a.effective??0));
+}
+
+function render(){
+  const arr = sortItems(all);
+  $('list').innerHTML = arr.map(it=>{
+    const cap = safe(it.emotion_capture), last = safe(it.emotion_last);
+    return `<div class="item" onclick="openD('${it.id}')">
+      <div class="row1">
+        <div class="title">${esc(it.title || '(无标题)')}</div>
+        ${it.pinned ? '<span class="pinmark">100%</span>' : ''}
+      </div>
+      <div class="meta">
+        <span class="chip">${esc(it.domain)}</span>
+        <span>${esc(kindName(it.kind))}</span>
+        <span>重要 ${Math.round(it.effective ?? it.importance)}</span>
+        <span class="emo"><i class="dot" style="background:${hue(cap.valence)}"></i>初 ${(cap.valence??0.5).toFixed(1)}</span>
+        <span class="emo"><i class="dot" style="background:${hue(last.valence)}"></i>第${last.version||1}次 ${(last.valence??0.5).toFixed(1)}</span>
+        <span style="margin-left:auto">${fmt(it.last_active)}</span>
+      </div>
+      <div class="preview">${esc(it.content)}</div>
+    </div>`;
+  }).join('') + (hasMore ? '<button class="loadmore" onclick="more()">加载更多</button>' : (arr.length ? '<div class="more">到底了</div>' : ''));
+}
+function safe(v){ try{ return typeof v==='string'? JSON.parse(v||'{}') : (v||{}); }catch(e){ return {}; } }
+function more(){ page++; loadList(false); }
+
+async function openD(id){
+  try{
+    const b = await api('/api/bucket/'+id);
+    const cap = safe(b.emotion_capture), last = safe(b.emotion_last);
+    const imp = Math.round(b.effective ?? b.importance);
+    $('dtitle').textContent = b.title || '(无标题)';
+    $('dbody').innerHTML = `
+      <div class="dmeta">
+        <span class="chip">${esc(b.domain)}</span><span>${esc(kindName(b.kind))}</span>
+        ${b.pinned?'<span class="chip">100% 不可随意改</span>':''}
+        <span>创建 ${fmt(b.created_at)} · 最近 ${fmt(b.last_active)}</span>
+      </div>
+      <div class="sect">重要度 ${imp}</div>
+      <div class="impbar"><i style="width:${Math.max(2,Math.min(100,imp))}%"></i></div>
+      <div class="sect">正文</div>
+      <div class="content">${esc(b.content)}</div>
+      <div class="sect">情绪 · 第一次与当前</div>
+      <div class="emocard">
+        <div class="emocol">
+          <div class="lab">第一次（v0 永不覆盖）</div>
+          <div class="val" style="color:${hue(cap.valence)}">${(cap.valence??0.5).toFixed(2)}</div>
+          <div class="bar2"><i style="width:${Math.round((cap.valence??0.5)*100)}%;background:${hue(cap.valence)}"></i></div>
+        </div>
+        <div class="emocol">
+          <div class="lab">当前（第 ${last.version||1} 次）</div>
+          <div class="val" style="color:${hue(last.valence)}">${(last.valence??0.5).toFixed(2)}</div>
+          <div class="bar2"><i style="width:${Math.round((last.valence??0.5)*100)}%;background:${hue(last.valence)}"></i></div>
+        </div>
+      </div>
+      <div class="acts">
+        <button class="btn" onclick="touch('${b.id}')">提起一次 +8</button>
+        <button class="btn ghost" onclick="pin('${b.id}',${b.pinned?0:1})">${b.pinned?'取消 100%':'钉为 100%'}</button>
+        <button class="btn ghost" onclick="resolve('${b.id}',${b.resolved?0:1})">${b.resolved?'标为未解决':'标为已解决'}</button>
+        <button class="btn warn" onclick="copyText('${b.id}')">复制正文</button>
+      </div>`;
+    $('mask').classList.add('on'); $('drawer').classList.add('on');
+  }catch(e){ toast('详情打不开：'+e.message); }
+}
+function closeD(){ $('mask').classList.remove('on'); $('drawer').classList.remove('on'); }
+
+async function touch(id){
+  try{ await api(`/api/bucket/${id}/touch`,{method:'POST',body:'{"mentioned":true}'}); toast('提起了一次'); loadStats(); loadList(true); closeD(); }
+  catch(e){ toast('没成功：'+e.message); }
+}
+async function pin(id,v){
+  const msg = v ? '钉为 100% 之后，每次改动都要先确认。继续？' : '取消 100%？';
+  if(!confirm(msg)) return;
+  try{ await api(`/api/bucket/${id}/pin`,{method:'POST',body:JSON.stringify({pinned:!!v,confirm:true})});
+       toast(v?'已钉为 100%':'已取消'); loadStats(); loadList(true); closeD(); }
+  catch(e){ toast('没成功：'+e.message); }
+}
+async function resolve(id,v){
+  const msg = v ? '标记为已解决？' : '标记为未解决？';
+  if(!confirm(msg)) return;
+  try{ await api(`/api/bucket/${id}/resolve`,{method:'POST',body:JSON.stringify({resolved:!!v,confirm:true})});
+       toast('已更新'); loadList(true); closeD(); }
+  catch(e){ toast('没成功：'+e.message); }
+}
+async function copyText(id){
+  try{
+    const b = await api('/api/bucket/'+id);
+    await navigator.clipboard.writeText(b.content);
+    toast('正文已复制');
+  }catch(e){ toast('复制失败'); }
+}
+
+// 事件
+$('q').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.target.blur(); loadList(true); } });
+$('q').addEventListener('input', debounce(()=>loadList(true), 420));
+['sort','dom','kind'].forEach(id=>$(id).addEventListener('change', ()=>loadList(true)));
+function debounce(fn,ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; }
+
+loadStats(); loadList(true);
+</script>
+</body>
+</html>

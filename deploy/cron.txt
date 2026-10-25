@@ -1,0 +1,6 @@
+定期备份：每小时第 17 分钟提交一次（crontab -e 加一行）
+17 * * * * GUAI_HOME=/home/ubuntu/guai-memory /home/ubuntu/guai-memory/deploy/sync-git.sh
+
+做梦（每晚 04:00 整理 + 情绪结算 + 生成梦）：
+0 4 * * * curl -s -X POST http://127.0.0.1:18002/api/dream >/dev/null 2>&1
+# 说明: 当前 API 尚未暴露 /api/dream，先用 MCP 调 dream 工具；下一版会补 REST。

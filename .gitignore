@@ -1,0 +1,15 @@
+# 派生物不进库（可随时重建 / 重算）
+*.db
+*.db-*
+*.corrupt-*
+data/guai.db*
+__pycache__/
+*.pyc
+.venv/
+*.log
+.env
+
+# 记忆真源（data/vault/**/*.md、data/config.yaml）要进库 —— 这就是异地备份的本体。
+
+# 真实记忆数据在私密库 yvqing000/guai-memory-data，公开库不推
+data/

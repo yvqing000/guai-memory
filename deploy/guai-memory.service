@@ -1,0 +1,17 @@
+[Unit]
+Description=归屿记忆系统 (Guai Memory v6)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/guai-memory
+EnvironmentFile=/home/ubuntu/guai-memory/.env
+Environment=GUAI_HOME=/home/ubuntu/guai-memory
+Environment=GUAI_PORT=18002
+Environment=GUAI_HOST=127.0.0.1
+ExecStart=/home/ubuntu/guai-memory/.venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
