@@ -397,6 +397,12 @@ def mirror_to_vault(row: sqlite3.Row) -> None:
     }
     body = ("---\n" + yaml.safe_dump(fm, allow_unicode=True, sort_keys=False) +
             "---\n\n# " + (r["title"] or "(无标题)") + "\n\n" + r["content"] + "\n")
+    # 同一个桶只保留一份镜像：title/domain 变了路径会变，旧文件要清掉
+    for old in VAULT.rglob(f"*-{r['id'][:6]}.md"):
+        try:
+            old.unlink()
+        except Exception:
+            pass
     (d / f"{slug(r['title'] or r['id'])}-{r['id'][:6]}.md").write_text(body, encoding="utf-8")
 
 # ─────────────────────────── 写入 ───────────────────────────
@@ -557,10 +563,22 @@ def _post_process(bid: str, content: str, title: str, domain: str, tags: str,
         try:
             obj = auto_tag(content, title)
             if obj:
+                cat2 = obj.get("category")
+                new_imp = importance
+                # 用户没手动给分时，才采用 LLM 判定的类别来定初始权重
+                if cat2 and abs(float(importance) - float(CFG["initial"].get(category, 50))) < 0.01:
+                    new_imp = float(CFG["initial"].get(cat2, importance))
                 with tx() as c:
-                    c.execute("UPDATE buckets SET domain=?, tags=?, kind=? WHERE id=?",
+                    c.execute("UPDATE buckets SET domain=?, tags=?, kind=?, importance=?, importance_base=? WHERE id=?",
                               (obj.get("domain") or domain, obj.get("tags") or tags,
-                               obj.get("kind") or kind, bid))
+                               obj.get("kind") or kind, new_imp, new_imp, bid))
+                conn = db()
+                try:
+                    row = conn.execute("SELECT * FROM buckets WHERE id=?", (bid,)).fetchone()
+                finally:
+                    conn.close()
+                if row:
+                    mirror_to_vault(row)   # 打标后同步 Markdown，否则真源还是旧值
         except Exception:
             pass
         try:
@@ -664,15 +682,15 @@ def log_injection(ids: list[str]) -> None:
             c.execute("INSERT INTO inject_log(at,bucket_id) VALUES(?,?)", (t, i))
 
 
-def _l2_band(score: float) -> int:
-    q = CFG["inject"]["l2_quota"]
+def _l2_band(score: float) -> str:
+    """返回档位名（不是配额数）——配额数会重复，用数字反查会串档。"""
     if score >= 79:
-        return int(q["79-80"])
+        return "79-80"
     if score >= 70:
-        return int(q["70-78"])
+        return "70-78"
     if score >= 60:
-        return int(q["60-69"])
-    return int(q["50-59"])
+        return "60-69"
+    return "50-59"
 
 
 def build_injection(at: Optional[int] = None, dry: bool = False) -> dict[str, Any]:
@@ -713,15 +731,13 @@ def build_injection(at: Optional[int] = None, dry: bool = False) -> dict[str, An
         if len(picked) >= cap:
             break
         band = _l2_band(r["effective"])
-        key = next((k for k, v in quota_left.items() if v == band), None)
-        if band <= 0 or (key and quota_left.get(key, 0) <= 0):
+        if quota_left.get(band, 0) <= 0:
             continue
         if domain_count.get(r["domain"], 0) >= int(CFG["inject"]["same_domain_max"]):
             continue
         picked.append(r)
         domain_count[r["domain"]] = domain_count.get(r["domain"], 0) + 1
-        if key:
-            quota_left[key] -= 1
+        quota_left[band] -= 1
 
     if l3:
         l3s = sorted(l3, key=prio, reverse=True)
@@ -791,7 +807,30 @@ def dream(window_hours: int = 48, dry: bool = False) -> dict[str, Any]:
                 title=f"梦·{r['title'][:16]}", domain="梦", kind="event", category="life",
                 actor="ai", emotion=parse_emotion(r["emotion_capture"]),
                 source=f"dream:{r['id']}")["id"])
-    return {"decayed": decayed, "window_buckets": len(rows), "active_plans": len(plans),
+    # 补向量：把还没向量化的记忆补上（每次最多 20 条，失败不影响做梦）
+    backfilled = 0
+    if CFG.get("semantic"):
+        try:
+            c3 = db()
+            try:
+                missing = [r["id"] for r in c3.execute(
+                    "SELECT b.id FROM buckets b LEFT JOIN embeddings e ON e.bucket_id=b.id "
+                    "WHERE e.bucket_id IS NULL AND b.superseded_by='' LIMIT 20").fetchall()]
+            finally:
+                c3.close()
+            for mid in missing:
+                c4 = db()
+                try:
+                    rr = c4.execute("SELECT title, content FROM buckets WHERE id=?", (mid,)).fetchone()
+                finally:
+                    c4.close()
+                if rr and store_embedding(mid, (rr["title"] or "") + "\n" + (rr["content"] or "")):
+                    backfilled += 1
+        except Exception:
+            pass
+
+    return {"decayed": decayed, "vector_backfilled": backfilled,
+            "window_buckets": len(rows), "active_plans": len(plans),
             "emotion_settled": {"first": avg(firsts), "current": avg(lasts)},
             "dream": dream_text, "dream_buckets": created, "dry_run": dry}
 
