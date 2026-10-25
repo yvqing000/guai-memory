@@ -78,10 +78,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mirror_enabled": True,
     # 自动打标（LLM）：写完一条后自动判断领域/标签/类型
     "auto_tag": True,
-    "llm": {"api_key": "", "base_url": "", "model": "", "timeout": 30},
+    "llm": {"api_key": os.environ.get("GUAI_LLM_API_KEY", ""),
+            "base_url": os.environ.get("GUAI_LLM_BASE_URL", ""),
+            "model": os.environ.get("GUAI_LLM_MODEL", ""), "timeout": 30},
     # 语义检索（embedding）：写入时后台向量化，检索时与关键词结果融合
     "semantic": True,
-    "embed": {"api_key": "", "base_url": "", "model": "", "timeout": 30, "dim": 1024},
+    "embed": {"api_key": os.environ.get("GUAI_EMBED_API_KEY", ""),
+              "base_url": os.environ.get("GUAI_EMBED_BASE_URL", ""),
+              "model": os.environ.get("GUAI_EMBED_MODEL", ""), "timeout": 30, "dim": 1024},
     "mcp_token": os.environ.get("GUAI_MCP_TOKEN", ""),
     "dashboard_password": os.environ.get("GUAI_DASHBOARD_PASSWORD", ""),
 }
@@ -445,7 +449,127 @@ def write_bucket(*, content: str, title: str = "", domain: str = "未分类", ta
         audit(actor, "WRITE", bid, f"kind={kind} base={base}", conn=c)
 
     mirror_to_vault(row)
+    _post_process(bid, content, title, domain, tags, kind, category, base)
     return dict(row)
+
+# ─────────────────────────── LLM 打标 / 向量检索 ───────────────────────────
+
+
+def _http_json(url: str, payload: dict, api_key: str, timeout: int = 30) -> dict:
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + api_key})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+TAG_PROMPT = """你是记忆库的打标器。给下面这条记忆判断属性，只输出一个 JSON 对象，不要任何解释：
+{"domain":"领域名（1-6字）","tags":"标签，逗号分隔","kind":"event","category":"life"}
+说明：kind 取值 event/feel/plan/persona/anchor/letter 之一；category 取 life/work/major 之一。
+生活、身体、情绪、约定、日常、吃喝作息 → life；工作、项目、技术、排障 → work；重大转折、关系定位 → major。
+记忆："""
+
+
+def auto_tag(content: str, title: str = "") -> Optional[dict]:
+    """调 LLM 自动打标。失败返回 None，调用方回退到手动值。"""
+    cfg = CFG.get("llm") or {}
+    if not CFG.get("auto_tag") or not cfg.get("api_key") or not cfg.get("base_url"):
+        return None
+    try:
+        data = _http_json(
+            cfg["base_url"].rstrip("/") + "/chat/completions",
+            {"model": cfg["model"], "temperature": 0.2, "max_tokens": 200,
+             "messages": [{"role": "system", "content": "你只输出 JSON。"},
+                          {"role": "user", "content": TAG_PROMPT + (title + "\n" if title else "") + content[:1500]}]},
+            cfg["api_key"], int(cfg.get("timeout", 30)))
+        txt = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        m = re.search(r"\{.*\}", txt, re.S)
+        obj = json.loads(m.group(0)) if m else {}
+        if obj.get("kind") not in VALID_KINDS:
+            obj["kind"] = "event"
+        if obj.get("category") not in ("life", "work", "major", "persona", "must"):
+            obj["category"] = "life"
+        if not obj.get("domain"):
+            obj["domain"] = "未分类"
+        return obj
+    except Exception:
+        return None
+
+
+def embed_text(text: str) -> Optional[list]:
+    cfg = CFG.get("embed") or {}
+    if not CFG.get("semantic") or not cfg.get("api_key") or not cfg.get("base_url"):
+        return None
+    try:
+        data = _http_json(
+            cfg["base_url"].rstrip("/") + "/embeddings",
+            {"model": cfg["model"], "input": text[:2000]},
+            cfg["api_key"], int(cfg.get("timeout", 30)))
+        vec = (data.get("data") or [{}])[0].get("embedding")
+        return list(vec) if vec else None
+    except Exception:
+        return None
+
+
+def _cosine(a: list, b: list) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def store_embedding(bucket_id: str, text: str) -> bool:
+    vec = embed_text(text)
+    if not vec:
+        return False
+    with tx() as c:
+        c.execute("INSERT OR REPLACE INTO embeddings(bucket_id,dim,vec,model,at) VALUES(?,?,?,?,?)",
+                  (bucket_id, len(vec), struct.pack(f"{len(vec)}f", *vec),
+                   (CFG.get("embed") or {}).get("model", ""), now_ts()))
+    return True
+
+
+def semantic_search(q: str, limit: int = 20) -> list:
+    """返回 [(余弦相似度, bucket_id)]，按相似度降序。"""
+    vec = embed_text(q)
+    if not vec:
+        return []
+    conn = db()
+    try:
+        rows = conn.execute("SELECT bucket_id, dim, vec FROM embeddings").fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        arr = struct.unpack(f"{r['dim']}f", r["vec"])
+        out.append((_cosine(vec, list(arr)), r["bucket_id"]))
+    out.sort(key=lambda x: x[0], reverse=True)
+    return out[:limit]
+
+
+def _post_process(bid: str, content: str, title: str, domain: str, tags: str,
+                  kind: str, category: str, importance: float) -> None:
+    """写入后后台做两件事：自动打标 + 向量化。失败不影响已写入的记忆。"""
+
+    def run():
+        try:
+            obj = auto_tag(content, title)
+            if obj:
+                with tx() as c:
+                    c.execute("UPDATE buckets SET domain=?, tags=?, kind=? WHERE id=?",
+                              (obj.get("domain") or domain, obj.get("tags") or tags,
+                               obj.get("kind") or kind, bid))
+        except Exception:
+            pass
+        try:
+            store_embedding(bid, (title or "") + "\n" + content)
+        except Exception:
+            pass
+
+    threading.Thread(target=run, daemon=True).start()
+
 
 # ─────────────────────────── 检索 ───────────────────────────
 
@@ -485,7 +609,37 @@ def search(q: str, domain: str = "", limit: int = 20) -> list[dict[str, Any]]:
         for r in rows:
             d = dict(r)
             d["effective"] = effective_importance(d)
+            d["semantic"] = None
             out.append(d)
+        # 语义融合：按「意思」命中的排在前面
+        if q.strip() and CFG.get("semantic"):
+            try:
+                hits = [(sc, bid) for sc, bid in semantic_search(q, limit=limit) if sc >= 0.35]
+                if hits:
+                    have = {d["id"] for d in out}
+                    want = [bid for sc, bid in hits if bid not in have]
+                    sem_items = []
+                    if want:
+                        ph = ",".join("?" * len(want))
+                        c2 = db()
+                        try:
+                            erows = c2.execute(f"SELECT * FROM buckets WHERE id IN ({ph})", want).fetchall()
+                        finally:
+                            c2.close()
+                        emap = {r["id"]: dict(r) for r in erows}
+                        for sc, bid in hits:
+                            if bid in emap:
+                                d = emap[bid]
+                                d["effective"] = effective_importance(d)
+                                d["semantic"] = round(sc, 3)
+                                sem_items.append(d)
+                    smap = {bid: sc for sc, bid in hits}
+                    for d in out:
+                        if d["id"] in smap:
+                            d["semantic"] = round(smap[d["id"]], 3)
+                    out = sem_items + out
+            except Exception:
+                pass
         return out
     finally:
         conn.close()

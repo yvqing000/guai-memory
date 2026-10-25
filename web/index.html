@@ -185,6 +185,7 @@ function render(){
         <span>重要 ${Math.round(it.effective ?? it.importance)}</span>
         <span class="emo"><i class="dot" style="background:${hue(cap.valence)}"></i>初 ${(cap.valence??0.5).toFixed(1)}</span>
         <span class="emo"><i class="dot" style="background:${hue(last.valence)}"></i>第${last.version||1}次 ${(last.valence??0.5).toFixed(1)}</span>
+        ${it.semantic != null ? `<span>相似 ${Number(it.semantic).toFixed(2)}</span>` : ''}
         <span style="margin-left:auto">${fmt(it.last_active)}</span>
       </div>
       <div class="preview">${esc(it.content)}</div>
